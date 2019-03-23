@@ -2,29 +2,35 @@ package main
 
 import (
 	"errors"
-	"fmt"
+	"log"
 	"path/filepath"
-	"sort"
+	"strconv"
 
 	"github.com/urfave/cli"
 	"gopkg.in/AlecAivazis/survey.v1"
 
-	"github.com/lukasdietrich/tinycloud"
+	"github.com/lukasdietrich/tinycloud/database"
+	"github.com/lukasdietrich/tinycloud/storage"
 )
 
 func users() cli.Command {
 	var (
-		users    = make(tinycloud.Users)
-		filename string
+		db *database.DB
+		s  *storage.Storage
 	)
 
 	return cli.Command{
 		Name: "users",
-		Before: func(ctx *cli.Context) error {
-			filename = filepath.Join(ctx.GlobalString("data"), "users.json")
-			users.Load(filename)
+		Before: func(ctx *cli.Context) (err error) {
+			data := ctx.GlobalString("data")
 
-			return nil
+			s, err = storage.New(data)
+			if err != nil {
+				return
+			}
+
+			db, err = database.Open(filepath.Join(data, databaseFile))
+			return
 		},
 		Subcommands: []cli.Command{
 			{
@@ -37,14 +43,20 @@ func users() cli.Command {
 
 					err := survey.Ask([]*survey.Question{
 						{
-							Name:     "name",
-							Prompt:   &survey.Input{Message: "Name:"},
-							Validate: survey.ComposeValidators(survey.Required, uniqueName(users)),
+							Name:   "name",
+							Prompt: &survey.Input{Message: "Name:"},
+							Validate: survey.ComposeValidators(
+								survey.Required,
+								uniqueName(db.Users()),
+							),
 						},
 						{
-							Name:     "pass",
-							Prompt:   &survey.Password{Message: "Password:"},
-							Validate: survey.MinLength(5),
+							Name:   "pass",
+							Prompt: &survey.Password{Message: "Password:"},
+							Validate: survey.ComposeValidators(
+								survey.Required,
+								survey.MinLength(5),
+							),
 						},
 					}, &answers)
 
@@ -52,14 +64,49 @@ func users() cli.Command {
 						return err
 					}
 
-					users.Put(answers.Name, answers.Pass)
-					return users.Save(filename)
+					err = db.Users().Add(answers.Name, answers.Pass)
+					if err != nil {
+						return err
+					}
+
+					return s.MkdirAll(
+						s.Resolve(storage.Users, answers.Name, "/"),
+						0700,
+					)
 				},
 			},
 			{
 				Name: "update",
 				Action: func(ctx *cli.Context) error {
-					return nil
+					var answers struct {
+						Name string
+						Pass string
+					}
+
+					err := survey.Ask([]*survey.Question{
+						{
+							Name:   "name",
+							Prompt: &survey.Input{Message: "Name:"},
+							Validate: survey.ComposeValidators(
+								survey.Required,
+								existsName(db.Users()),
+							),
+						},
+						{
+							Name:   "pass",
+							Prompt: &survey.Password{Message: "Password:"},
+							Validate: survey.ComposeValidators(
+								survey.Required,
+								survey.MinLength(5),
+							),
+						},
+					}, &answers)
+
+					if err != nil {
+						return err
+					}
+
+					return db.Users().Update(answers.Name, answers.Pass)
 				},
 			},
 			{
@@ -72,13 +119,19 @@ func users() cli.Command {
 
 					err := survey.Ask([]*survey.Question{
 						{
-							Name:     "name",
-							Prompt:   &survey.Input{Message: "Name:"},
-							Validate: survey.ComposeValidators(existsName(users)),
+							Name:   "name",
+							Prompt: &survey.Input{Message: "Name:"},
+							Validate: survey.ComposeValidators(
+								survey.Required,
+								existsName(db.Users()),
+							),
 						},
 						{
-							Name:   "confirm",
-							Prompt: &survey.Select{Message: "Are you sure?", Options: []string{"No", "Yes"}},
+							Name: "confirm",
+							Prompt: &survey.Select{
+								Message: "Are you sure?",
+								Options: []string{"No", "Yes"},
+							},
 						},
 					}, &answers)
 
@@ -86,29 +139,33 @@ func users() cli.Command {
 						return err
 					}
 
-					if answers.Confirm == "Yes" {
-						delete(users, answers.Name)
-						return users.Save(filename)
+					if answers.Confirm != "Yes" {
+						return nil
 					}
 
-					return nil
+					err = s.RemoveAll(
+						s.Resolve(storage.Users, answers.Name, "/"),
+					)
+
+					if err != nil {
+						return err
+					}
+
+					return db.Users().Delete(answers.Name)
 				},
 			},
 			{
 				Name: "list",
 				Action: func(ctx *cli.Context) error {
-					var names []string
-
-					for name, _ := range users {
-						names = append(names, name)
+					list, err := db.Users().List()
+					if err != nil {
+						return err
 					}
 
-					sort.Strings(names)
+					log.Printf("there are (%d) users:", len(list))
 
-					fmt.Printf("%d users:\n", len(users))
-
-					for _, name := range names {
-						fmt.Printf("- %s\n", name)
+					for _, name := range list {
+						log.Printf("- %s", strconv.Quote(name))
 					}
 
 					return nil
@@ -118,23 +175,27 @@ func users() cli.Command {
 	}
 }
 
-func uniqueName(users tinycloud.Users) survey.Validator {
+func uniqueName(users database.Users) survey.Validator {
 	return func(v interface{}) error {
 		name := v.(string)
 
-		for user, _ := range users {
-			if user == name {
-				return errors.New("name already taken")
-			}
+		if exists, err := users.Exists(name); err != nil {
+			return err
+		} else if exists {
+			return errors.New("name already taken")
 		}
 
 		return nil
 	}
 }
 
-func existsName(users tinycloud.Users) survey.Validator {
+func existsName(users database.Users) survey.Validator {
 	return func(v interface{}) error {
-		if _, ok := users[v.(string)]; !ok {
+		name := v.(string)
+
+		if exists, err := users.Exists(name); err != nil {
+			return err
+		} else if !exists {
 			return errors.New("unknown username")
 		}
 

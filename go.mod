@@ -3,6 +3,7 @@ module github.com/lukasdietrich/tinycloud
 go 1.12
 
 require (
+	github.com/mattn/go-sqlite3 v1.10.0
 	github.com/spf13/afero v1.2.1
 	github.com/urfave/cli v1.20.0
 	golang.org/x/crypto v0.0.0-20190313024323-a1f597ede03a

@@ -1,4 +1,4 @@
-package tinycloud
+package webdav
 
 import (
 	"context"
@@ -9,8 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/spf13/afero"
 	"golang.org/x/net/webdav"
+
+	"github.com/lukasdietrich/tinycloud/storage"
 )
 
 var (
@@ -31,21 +32,22 @@ const (
 // "/shares/<share>/..."
 
 type resource struct {
-	name string
-	kind int
-	root bool
+	kind       int
+	foldername string
+	filename   string
+	root       bool
 }
 
 func parseResource(ctx context.Context, name string) resource {
 	var (
-		user = ctx.Value(ctxUser{}).(string)
-		kind = invalid
-		root = true
+		user       = ctx.Value(ctxUser{}).(string)
+		kind       = invalid
+		foldername = ""
+		filename   = path.Clean(name)
+		root       = true
 	)
 
-	name = path.Clean(name)
-
-	switch name {
+	switch filename {
 	case "":
 		kind = invalid
 
@@ -61,6 +63,8 @@ func parseResource(ctx context.Context, name string) resource {
 		if len(parts) > 0 {
 			if parts[0] == user {
 				kind = userFolder
+				foldername = user
+				filename = path.Join(parts[1:]...)
 				root = len(parts) == 1
 			} else if parts[0] == "shares" {
 				// TODO: if has access to share
@@ -69,9 +73,10 @@ func parseResource(ctx context.Context, name string) resource {
 	}
 
 	return resource{
-		name: name,
-		kind: kind,
-		root: root,
+		kind:       kind,
+		foldername: foldername,
+		filename:   filename,
+		root:       root,
 	}
 }
 
@@ -84,16 +89,16 @@ func (r resource) canModify() bool {
 }
 
 type fs struct {
-	files afero.Fs
+	storage *storage.Storage
 }
 
 func (f fs) resolve(r resource) string {
 	switch r.kind {
 	case userFolder:
-		return path.Join("users", r.name)
+		return f.storage.Resolve(storage.Users, r.foldername, r.filename)
 
 	case shareFolder:
-		return r.name
+		return f.storage.Resolve(storage.Shares, r.foldername, r.filename)
 
 	default:
 		panic(errVirtualResource)
@@ -102,7 +107,7 @@ func (f fs) resolve(r resource) string {
 
 func (f fs) Mkdir(ctx context.Context, name string, perm os.FileMode) error {
 	if r := parseResource(ctx, name); r.canModify() {
-		return f.files.Mkdir(f.resolve(r), perm)
+		return f.storage.Mkdir(f.resolve(r), perm)
 	}
 
 	return errNoPermission
@@ -129,7 +134,7 @@ func (f fs) OpenFile(ctx context.Context, name string, flag int, perm os.FileMod
 
 	default:
 		if r.canOpen() {
-			return f.files.OpenFile(f.resolve(r), flag, perm)
+			return f.storage.OpenFile(f.resolve(r), flag, perm)
 		}
 	}
 
@@ -138,7 +143,7 @@ func (f fs) OpenFile(ctx context.Context, name string, flag int, perm os.FileMod
 
 func (f fs) RemoveAll(ctx context.Context, name string) error {
 	if r := parseResource(ctx, name); r.canModify() {
-		return f.files.RemoveAll(f.resolve(r))
+		return f.storage.RemoveAll(f.resolve(r))
 	}
 
 	return errNoPermission
@@ -151,7 +156,7 @@ func (f fs) Rename(ctx context.Context, oldName, newName string) error {
 	)
 
 	if rOld.canModify() && rNew.canModify() {
-		return f.files.Rename(f.resolve(rOld), f.resolve(rNew))
+		return f.storage.Rename(f.resolve(rOld), f.resolve(rNew))
 	}
 
 	return errNoPermission
@@ -173,7 +178,7 @@ func (f fs) Stat(ctx context.Context, name string) (os.FileInfo, error) {
 
 	default:
 		if r.canOpen() {
-			return f.files.Stat(f.resolve(r))
+			return f.storage.Stat(f.resolve(r))
 		}
 	}
 

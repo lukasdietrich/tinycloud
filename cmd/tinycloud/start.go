@@ -1,14 +1,14 @@
 package main
 
 import (
-	"errors"
-	"log"
 	"net/http"
 	"path/filepath"
 
 	"github.com/urfave/cli"
 
-	"github.com/lukasdietrich/tinycloud"
+	"github.com/lukasdietrich/tinycloud/database"
+	"github.com/lukasdietrich/tinycloud/storage"
+	"github.com/lukasdietrich/tinycloud/webdav"
 )
 
 func start() cli.Command {
@@ -40,23 +40,25 @@ func start() cli.Command {
 			var (
 				data  = ctx.GlobalString("data")
 				realm = ctx.String("realm")
-				users = make(tinycloud.Users)
 			)
 
-			users.Load(filepath.Join(data, "users.json"))
-
-			if len(users) == 0 {
-				return errors.New("no users configured")
+			db, err := database.Open(filepath.Join(data, databaseFile))
+			if err != nil {
+				return err
 			}
 
-			handler := tinycloud.New(&tinycloud.Config{
-				Users:  users,
-				Folder: data,
-				Realm:  realm,
+			s, err := storage.New(data)
+			if err != nil {
+				return err
+			}
+
+			handler := webdav.New(&webdav.Config{
+				Realm:    realm,
+				Database: db,
+				Storage:  s,
 			})
 
 			if ctx.Bool("tls") {
-				log.Printf("with tls")
 				return http.ListenAndServeTLS(
 					ctx.String("addr"),
 					ctx.String("certFile"),

@@ -4,6 +4,10 @@ import (
 	"github.com/urfave/cli"
 )
 
+const (
+	databaseFile = "tinycloud.sqlite"
+)
+
 var (
 	Version string
 )
